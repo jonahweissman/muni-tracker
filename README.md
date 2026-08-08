@@ -39,9 +39,23 @@ can see the actual schema.
 
 This covers "do buses leave on time" completely. It does NOT contain
 prediction snapshots, so grading the accuracy of the NextMuni signs
-still requires Path B below (or Cal-ITP's archive).
+requires recording predictions as they happen (below).
 
-## Path B: collect live (for prediction accuracy)
+## Path B: recording predictions (for accuracy grading)
+
+Running now, no laptop needed: this repo (github.com/jonahweissman/muni-tracker,
+public) has a GitHub Actions cron (`.github/workflows/snapshot.yml`) that runs
+`snapshot_predictions.py` every ~5 minutes and commits each filtered GTFS-RT
+trip-updates snapshot to `snapshots/YYYY-MM-DD/HHMMSSZ.csv.gz` (~20 KB,
+~2,900 predictions each). Token lives in the `TRANSIT_511_TOKEN` Actions secret.
+
+Grading: once the covering month's `-so` archive is published, join snapshots
+to observed arrivals on trip + stop_sequence + service date (note: archive
+trip_ids look like `SF:12053393_M11:20260630`; live feed uses the bare numeric
+prefix, and archive route_ids carry an `SF:` prefix). Error = predicted −
+observed, bucketed by horizon (predicted − poll_ts).
+
+## Path B-alt: local live collector (unused)
 
 ```sh
 uv run collect.py
