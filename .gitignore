@@ -1,0 +1,4 @@
+data/
+.token
+__pycache__/
+*.db
