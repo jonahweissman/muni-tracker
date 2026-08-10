@@ -1,8 +1,11 @@
 name: snapshot-predictions
 
+# GitHub throttles high-frequency schedules (a */5 cron fired every ~20-40
+# min in practice), so instead one job runs hourly and loops internally,
+# snapshotting every 5 minutes and committing each one.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "4 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -15,20 +18,23 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: pip install --quiet requests gtfs-realtime-bindings
-      - name: Take snapshot
+      - name: Snapshot every 5 minutes for the hour
         env:
           TRANSIT_511_TOKEN: ${{ secrets.TRANSIT_511_TOKEN }}
-        run: python snapshot_predictions.py
-      - name: Commit snapshot
         run: |
           git config user.name "snapshot-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add snapshots
-          git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
-          git pull --rebase origin main
-          git push
+          for i in $(seq 1 11); do
+            python snapshot_predictions.py || true
+            git add snapshots
+            if git commit -q -m "snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+              git pull --rebase -q origin main || true
+              git push -q || true
+            fi
+            [ "$i" -lt 11 ] && sleep 300
+          done
