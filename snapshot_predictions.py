@@ -81,6 +81,45 @@ def main() -> None:
         f.write(buf.getvalue())
     print(f"{out}: {len(rows)} prediction rows")
 
+    # Vehicle positions: independent GPS record of where each bus actually
+    # is, so stop passages can be bracketed without trusting predictions.
+    try:
+        r = requests.get(
+            f"https://api.511.org/transit/vehiclepositions?api_key={token}&agency=SF",
+            timeout=60,
+        )
+        r.raise_for_status()
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(r.content)
+        vrows = []
+        for ent in feed.entity:
+            if not ent.HasField("vehicle"):
+                continue
+            v = ent.vehicle
+            if v.trip.route_id not in ROUTES:
+                continue
+            vrows.append([
+                now, v.trip.trip_id, v.trip.start_date or "", v.trip.route_id,
+                v.vehicle.id or "",
+                round(v.position.latitude, 6) if v.HasField("position") else "",
+                round(v.position.longitude, 6) if v.HasField("position") else "",
+                v.stop_id or "",
+                v.current_stop_sequence if v.HasField("current_stop_sequence") else "",
+                v.current_status, v.timestamp or "",
+            ])
+        vout = out_dir / (utc.strftime("%H%M%S") + "Z-vp.csv.gz")
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["poll_ts", "trip_id", "start_date", "route_id", "vehicle_id",
+                    "lat", "lon", "stop_id", "current_stop_sequence",
+                    "current_status", "vehicle_ts"])
+        w.writerows(vrows)
+        with gzip.open(vout, "wt", newline="") as f:
+            f.write(buf.getvalue())
+        print(f"{vout}: {len(vrows)} vehicle positions")
+    except Exception as e:  # predictions are the primary record; never fail on VP
+        print(f"vehicle positions skipped: {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
