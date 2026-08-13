@@ -5,8 +5,8 @@
 #   "requests>=2.31",
 # ]
 # ///
-"""One-shot snapshot of 511 GTFS-RT trip updates (predictions) for Muni
-routes 1/33/38/38R. Designed to run on a schedule (GitHub Actions cron).
+"""One-shot snapshot of 511 GTFS-RT trip updates (predictions) for all
+Muni routes. Designed to run on a schedule (GitHub Actions cron).
 
 Writes snapshots/YYYY-MM-DD/HHMMSSZ.csv.gz (UTC). Ground truth arrives
 later via the 511 monthly '-so' archive; join on trip_id + stop_sequence
@@ -26,7 +26,6 @@ from pathlib import Path
 import requests
 from google.transit import gtfs_realtime_pb2
 
-ROUTES = {"SF:1", "SF:33", "SF:38", "SF:38R", "1", "33", "38", "38R"}
 HERE = Path(__file__).parent
 
 
@@ -51,8 +50,6 @@ def main() -> None:
         if not ent.HasField("trip_update"):
             continue
         tu = ent.trip_update
-        if tu.trip.route_id not in ROUTES:
-            continue
         vid = tu.vehicle.id if tu.HasField("vehicle") else ""
         for stu in tu.stop_time_update:
             rows.append([
@@ -96,8 +93,6 @@ def main() -> None:
             if not ent.HasField("vehicle"):
                 continue
             v = ent.vehicle
-            if v.trip.route_id not in ROUTES:
-                continue
             vrows.append([
                 now, v.trip.trip_id, v.trip.start_date or "", v.trip.route_id,
                 v.vehicle.id or "",
