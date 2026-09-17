@@ -1,8 +1,23 @@
 name: snapshot-predictions
 
-# GitHub throttles high-frequency schedules (a */5 cron fired every ~20-40
-# min in practice), so instead one job runs hourly and loops internally,
-# snapshotting every 5 minutes and committing each one.
+# Goal: one GTFS-RT snapshot every 5 minutes, around the clock.
+#
+# GitHub's `schedule` trigger is best-effort and, for this repo, badly
+# throttled: a `*/5` cron fired every 20-40 min, and the hourly cron that
+# replaced it was honored only ~5 times a day (Sept 2026 run history shows
+# ~52-min runs separated by 3-6 h gaps, i.e. ~19% coverage). So the cron
+# cannot be the thing that provides continuity.
+#
+# Instead each run is long (just under GitHub's 6 h job cap), snapshots
+# every 5 minutes internally, and dispatches its own successor as soon as
+# it starts. The successor sits in the `snapshot` concurrency group until
+# this run finishes (or dies), then starts within about a minute. The cron
+# remains only as a safety net that restarts the chain if it ever breaks
+# (a cron run that arrives while the chain is healthy simply replaces the
+# pending successor, which shows up as a harmless "cancelled" run).
+#
+# Note: workflow_dispatch is one of the two events that GITHUB_TOKEN *is*
+# allowed to trigger, so no PAT is needed.
 on:
   schedule:
     - cron: "4 * * * *"
@@ -14,27 +29,74 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
+
+env:
+  # Keep snapshotting until this many minutes after the job started, then
+  # hand off to the successor. Must stay under the 360-min job limit with
+  # enough margin for the final commit/push and the fallback step below.
+  RUN_MINUTES: "345"
+  INTERVAL_SECONDS: "300"
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 58
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+
+      # Queue the next run right away so a successor is always waiting,
+      # even if this runner is lost mid-run. Failure here is non-fatal:
+      # the fallback step at the end retries, and the cron backstops both.
+      - name: Queue successor run
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run snapshot.yml --ref main || echo "::warning::could not queue successor"
+
       - name: Install dependencies
         run: pip install --quiet requests gtfs-realtime-bindings
-      - name: Snapshot every 5 minutes for the hour
+
+      - name: Snapshot every 5 minutes
+        timeout-minutes: 350
         env:
           TRANSIT_511_TOKEN: ${{ secrets.TRANSIT_511_TOKEN }}
         run: |
+          set -u
           git config user.name "snapshot-bot"
           git config user.email "actions@users.noreply.github.com"
-          for i in $(seq 1 11); do
+          # A dispatched run may have been queued hours ago against a stale
+          # SHA; start from the real tip of main.
+          git fetch -q origin main && git reset -q --hard origin/main || echo "::warning::could not sync to origin/main; relying on pull --rebase"
+
+          deadline=$(( $(date +%s) + RUN_MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
             python snapshot_predictions.py || true
             git add snapshots
             if git commit -q -m "snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
-              git pull --rebase -q origin main || true
-              git push -q || true
+              # Retry a few times; an unpushed commit just rides along with
+              # the next one, so this never needs to be fatal.
+              for attempt in 1 2 3; do
+                git pull --rebase -q origin main || git rebase --abort || true
+                git push -q origin HEAD:main && break
+                sleep 10
+              done
             fi
-            if [ "$i" -lt 11 ]; then sleep 300; fi
+            # Sleep to the next INTERVAL_SECONDS wall-clock boundary so
+            # snapshots land at :00/:05/:10 regardless of run handoffs.
+            sleep $(( INTERVAL_SECONDS - $(date +%s) % INTERVAL_SECONDS ))
           done
+
+      # If the successor queued at the start is gone (dispatch failed, or
+      # it was cancelled and nothing replaced it), queue one now.
+      - name: Ensure a successor is queued
+        if: always() && github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          waiting=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/snapshot.yml/runs?per_page=30" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | select(.status != \"completed\")] | length" || echo "")
+          echo "other non-completed runs: ${waiting}"
+          if [ "${waiting:-0}" -eq 0 ]; then
+            gh workflow run snapshot.yml --ref main
+          fi

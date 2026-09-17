@@ -44,10 +44,13 @@ requires recording predictions as they happen (below).
 ## Path B: recording predictions (for accuracy grading)
 
 Running now, no laptop needed: this repo (github.com/jonahweissman/muni-tracker,
-public) has a GitHub Actions cron (`.github/workflows/snapshot.yml`) that runs
-`snapshot_predictions.py` every ~5 minutes and commits each GTFS-RT
-trip-updates snapshot to `snapshots/YYYY-MM-DD/HHMMSSZ.csv.gz`. Token lives
-in the `TRANSIT_511_TOKEN` Actions secret. Snapshots covered only routes
+public) has a GitHub Actions workflow (`.github/workflows/snapshot.yml`) that
+runs `snapshot_predictions.py` every 5 minutes and commits each GTFS-RT
+trip-updates snapshot to `snapshots/YYYY-MM-DD/HHMMSSZ.csv.gz`. GitHub's cron
+is throttled to a handful of firings per day for this repo (through
+2026-09-16 that meant ~50-min bursts with 3-6 h gaps, ~19% coverage), so each
+run is a ~6 h job that dispatches its own successor; the cron is only a
+restart safety net. Token lives in the `TRANSIT_511_TOKEN` Actions secret. Snapshots covered only routes
 1/33/38/38R until 2026-08-13; since then they cover **all Muni routes**
 (~35k predictions, ~250 KB each — ~70 MB/day, so the repo grows ~2 GB/month
 while collection runs; move storage out of git if this runs long-term).
